@@ -1,0 +1,575 @@
+Main Header
+===========
+:Author:             김하늘 (Haneul Kim)
+:Email:              <hskimsky@gmail.com>
+:Date:               2016-09-11
+:source-highlighter: coderay
+
+== 목표와 전제조건
+
+oozie 사용법과 팁을 정리해놓았습니다. +
+hadoop, oozie install 방법은 포함하지 않았습니다. +
+문서는 asciidoc 으로 작성하였으며 repository 내에 asciidoc 파일이 포함되어 있습니다. +
+잘못된 점이 있으면 hskimsky@gmail.com 으로 메일 주시기 바랍니다.
+
+== Test Environment
+
+.Virtual Machine 구성
+[width="100%",cols="3,7",frame="topbot",options="header"]
+|======================
+|Program |Version
+|Linux   |CentOS 6.7
+|Python  |2.6.6
+|JAVA    |Oracle JDK 1.7.0_80
+|Maven   |Apache Maven 3.3.9
+|HDP     |2.4.2.0-258
+|======================
+
+.ROLE 구성
+[width="100%",cols="3,7",frame="topbot",options="header"]
+|======================
+|FQDN           |ROLE
+|hdp1.hdp.local |Namenode1, ResourceManager1, Oozie Server
+|hdp2.hdp.local |Namenode2, ResourceManager2
+|hdp3.hdp.local |Datanode
+|hdp4.hdp.local |Datanode
+|======================
+
+== 용어설명
+
+image::images/oozie.png[구성도]
+
+=== *Oozie*
+
+Oozie 는 Apache Hadoop 잡을 관리하는 *워크플로우 스케쥴러 시스템*입니다.
+
+=== *Workflow*
+
+Workflow 란 일련의 작업의 흐름을 이야기합니다.
+
+Oozie site 에서는 작업들의 방향성 비순환 그래프(Directed Acyclical Graphs (DAGs))라고 이야기합니다.
+
+=== *Coordinator*
+
+Coordinator 란 Workflow 를 시간과 데이터 가용성에 의해 반복적으로 Workflow 를 실행하는 Job 입니다.
+
+=== *Bundle*
+
+Bundle 이란 Coordinator 의 묶음입니다.
+
+=== *Action*
+
+workflow 내에서 수행할 작업의 가장 작은 단위. +
+workflow 안에 다수의 action 이 존재합니다. +
+start, decision, fork, join, kill, end, map-reduce, shell 등이 포함됩니다.
+
+== Workflow 작성하기
+
+=== Properties File
+
+jobTracker 에는 resource manager address 를 입력합니다.
+
+nameNode 에는 fs.defaultFS 값을 입력합니다.
+
+[source,properties]
+----
+jobTracker=hdp2.hdp.local:8050
+nameNode=hdfs://haneulhdp
+queueName=default
+
+basePath=${nameNode}/user/oozie/apps/subwf
+# oozie.wf.application.path=${basePath}
+# oozie.coord.application.path=${basePath}
+# oozie.bundle.application.path=${basePath}
+oozie.libpath=${basePath}/lib
+
+# shell
+shellWfPath=${basePath}/shell
+echoScriptPath=${shellWfPath}/echo.sh
+
+# ssh
+sshWfPath=${basePath}/ssh
+
+# wordcount
+wordCountWfPath=${basePath}/wordcount
+inputDir=${wordCountWfPath}/input
+outputDir=${wordCountWfPath}/output
+
+user.name=hskimsky <1>
+----
+<1> 이후 모든 job 이 hskimsky user 로 실행됩니다.
+
+=== sub-workflow 실행하기
+
+[source,xml]
+----
+<workflow-app xmlns="uri:oozie:workflow:0.4" name="sub-WF-${today}"> <1>
+    <start to="shell"/>
+    <action name="shell">
+        <sub-workflow>
+            <app-path>${shellWfPath}</app-path>
+            <propagate-configuration /> <2>
+        </sub-workflow>
+        <ok to="mr"/>
+        <error to="kill"/>
+    </action>
+    <action name="mr">
+        <sub-workflow>
+            <app-path>${wordCountWfPath}</app-path>
+            <propagate-configuration />
+        </sub-workflow>
+        <ok to="end"/>
+        <error to="kill"/>
+    </action>
+    <kill name="kill">
+        <message>The example shell action failed!</message>
+    </kill>
+    <end name="end"/>
+</workflow-app>
+----
+<1> xml 의 property 의 value 에도 표현식 사용 가능합니다.
+<2> 현재 properties 를 sub-workflow 로 전달합니다.
+
+=== shell 실행하기
+
+[source,xml]
+----
+<workflow-app xmlns="uri:oozie:workflow:0.4" name="shell-WF-${today}">
+    <start to="echoShell"/>
+    <action name="echoShell">
+        <shell xmlns="uri:oozie:shell-action:0.2"> <1>
+            <job-tracker>${jobTracker}</job-tracker>
+            <name-node>${nameNode}</name-node>
+            <configuration>
+                <property>
+                    <name>oozie.launcher.mapred.job.queue.name</name>
+                    <value>${queueName}</value>
+                </property>
+            </configuration>
+            <exec>${echoScriptPath}</exec>
+            <argument>arg1</argument>
+            <argument>arg2</argument>
+            <env-var>TZ=KST</env-var>
+            <env-var>TZ2=KST2</env-var>
+            <file>${echoScriptPath}#${echoScriptPath}</file>
+            <capture-output/> <2>
+        </shell>
+        <ok to="end"/>
+        <error to="kill"/>
+    </action>
+    <kill name="kill">
+        <message>The example shell action failed!</message>
+    </kill>
+    <end name="end"/>
+</workflow-app>
+----
+<1> job-tracker, name-node, exec, argument, env-var, file, capture-output 순서로 작성합니다.
+<2> echo "key=value" 형태로 출력 시 이후 진행되는 workflow 에서 ${wf:actionData(\'echoShell')[\'key']} 형태로 사용 가능합니다.
+
+=== map-reduce 실행하기
+
+[source,xml]
+----
+<workflow-app xmlns="uri:oozie:workflow:0.4" name="wordcount-wf-${today}">
+    <start to="wordcount"/>
+    <action name="wordcount">
+        <map-reduce>
+            <job-tracker>${jobTracker}</job-tracker>
+            <name-node>${nameNode}</name-node>
+            <prepare>
+                <delete path="${outputDir}/${today}"/>
+            </prepare>
+            <configuration>
+                <property>
+                    <name>oozie.launcher.mapreduce.job.queuename</name>
+                    <value>${queueName}</value>
+                </property>
+                <property>
+                    <name>mapreduce.job.queuename</name>
+                    <value>${queueName}</value>
+                </property>
+                <property>
+                    <name>mapred.mapper.new-api</name>
+                    <value>true</value>
+                </property>
+                <property>
+                    <name>mapred.reducer.new-api</name>
+                    <value>true</value>
+                </property>
+                <property>
+                    <name>mapreduce.map.class</name>
+                    <value>org.apache.hadoop.examples.WordCount$TokenizerMapper</value>
+                </property>
+                <property>
+                    <name>mapreduce.reduce.class</name>
+                    <value>org.apache.hadoop.examples.WordCount$IntSumReducer</value>
+                </property>
+                <property>
+                    <name>mapred.output.key.class</name>
+                    <value>org.apache.hadoop.io.Text</value>
+                </property>
+                <property>
+                    <name>mapred.output.value.class</name>
+                    <value>org.apache.hadoop.io.IntWritable</value>
+                </property>
+                <property>
+                    <name>mapred.input.dir</name>
+                    <value>${inputDir}</value>
+                </property>
+                <property>
+                    <name>mapred.output.dir</name>
+                    <value>${outputDir}/${today}</value>
+                </property>
+            </configuration>
+        </map-reduce>
+        <ok to="end"/>
+        <error to="kill"/>
+    </action>
+    <kill name="kill">
+        <message>${wf:errorCode("wordcount")}</message>
+    </kill>
+    <end name="end"/>
+</workflow-app>
+----
+
+=== ssh 실행하기
+
+[IMPORTANT]
+*Oozie Server 를 실행시키는 user* (hdp 의 경우 oozie) 와 *host 의 user* 와 *키교환*이 돼있어야 실행 가능합니다.
+
+아래 명령어를 oozie 에서 실행하기 위한 xml 예제입니다.
+
+ssh root@hdp3.hdp.local \'su - hdfs -c "hdfs dfs -chown -R hskimsky:hskimsky /tmp/test/hskimsky"'
+
+[source,xml]
+----
+<workflow-app xmlns="uri:oozie:workflow:0.4" name="ssh-WF-${today}">
+    <start to="echoSsh"/>
+    <action name="echoSsh">
+        <ssh xmlns="uri:oozie:ssh-action:0.2">
+            <host>root@hdp3.hdp.local</host>
+            <command>su</command>
+            <arg>-</arg>
+            <arg>hdfs</arg>
+            <arg>-c</arg>
+            <arg>"hdfs dfs -chown -R hskimsky:hskimsky /tmp/test/hskimsky"</arg>
+            <capture-output/>
+        </ssh>
+        <ok to="end"/>
+        <error to="kill"/>
+    </action>
+    <kill name="kill">
+        <message>The example ssh action failed!</message>
+    </kill>
+    <end name="end"/>
+</workflow-app>
+----
+
+[IMPORTANT]
+*shell action 과 ssh action 의 차이점* +
+shell action 은 hadoop node 중 하나에서 custom script 나 shell command 를 실행할 수 있고 +
+ssh action 은 hadoop node 가 아닌 다른 원격지에서도 실행할 수 있습니다. +
+그리고 shell action 은 Oozie launcher 를 통해 실행되지만, ssh action 은 Oozie server 에서 초기화됩니다.
+
+=== decision node
+
+[source,xml]
+----
+<workflow-app name="[WF-DEF-NAME]" xmlns="uri:oozie:workflow:0.1">
+    ...
+    <decision name="[NODE-NAME]">
+        <switch>
+            <case to="[NODE_NAME]">[PREDICATE]</case>
+            <case to="[NODE_NAME]">[PREDICATE]</case>
+            ...
+            <default to="[NODE_NAME]"/>
+        </switch>
+    </decision>
+    ...
+</workflow-app>
+----
+
+=== fork, join node
+
+[source,xml]
+----
+<workflow-app name="[WF-DEF-NAME]" xmlns="uri:oozie:workflow:0.1">
+    ...
+    <fork name="[FORK-NODE-NAME]">
+        <path start="[NODE-NAME]" />
+        <path start="[NODE-NAME]" />
+        ...
+    </fork>
+    ...
+    <join name="[JOIN-NODE-NAME]" to="[NODE-NAME]" />
+    ...
+</workflow-app>
+----
+
+=== coordinator
+
+이틀 전 날짜 기준으로 매일 0시 0분에 실행하는 예제입니다.
+
+nominal time 이란 실행돼야 하는 시간을 의미합니다.
+
+[source,xml]
+----
+<coordinator-app name="subWF-coord" frequency="0 0 * * *" start="${start}T00:00+0900" end="${end}T00:00+0900" timezone="GMT+0900" xmlns="uri:oozie:coordinator:0.4">
+    <action>
+        <workflow>
+            <app-path>${basePath}</app-path>
+            <configuration>
+                <property>
+                    <name>today</name>
+                    <value>${coord:formatTime(coord:dateOffset(coord:nominalTime(), -2, "DAY"), "yyyyMMdd")}</value>
+                </property>
+            </configuration>
+        </workflow>
+    </action>
+</coordinator-app>
+----
+
+[TIP]
+frequency="0 0 * * *" start="2016-09-09T00:00+0900" end="2016-09-12T00:00+0900" timezone="GMT+0900" 와 같이 설정 된 상태에서 +
+현재 시간이 2016-09-10 12:34 이라면 +
+9일 0시에 실행됐어야 하는 coordinator 와 +
+10일 0시에 실행됐어야 하는 coordinator 2개가 5분 간격으로 실행됩니다. +
+oozie.service.CoordMaterializeTriggerService.lookup.interval 값을 설정하여 실행간격을 설정할 수 있습니다. +
+coordinator 로 실행 된 workflow 의 elapsed time 이 위 설정 시간보다 오래 걸릴 경우 다음 workflow 는 대기합니다.
+
+=== bundle
+
+위에서 작성한 coordinator 를 실행시키는 bundle 입니다.
+
+[source,xml]
+----
+<bundle-app name="subWF-bundle" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="uri:oozie:bundle:0.2">
+    <parameters>
+        <property>
+            <name>start</name>
+            <value>${today}</value>
+        </property>
+        <property>
+            <name>end</name>
+            <value>2050-12-31</value>
+        </property>
+    </parameters>
+    <coordinator name="subWF-coord">
+        <app-path>${basePath}</app-path>
+        <configuration>
+            <property>
+                <name>start</name>
+                <value>${start}</value>
+            </property>
+            <property>
+                <name>end</name>
+                <value>${end}</value>
+            </property>
+        </configuration>
+    </coordinator>
+</bundle-app>
+----
+
+=== bundle 실행하기
+
+위 bundle 을 실행하는 스크립트 입니다.
+
+[source,bash]
+----
+#! /bin/bash
+cat global.properties > merge_bundle.properties
+echo 'oozie.bundle.application.path=${basePath}' >> merge_bundle.properties
+today=$(date +%Y-%m-%d)
+oozie job -oozie http://localhost:11000/oozie -config merge_bundle.properties -run -Dtoday=${today}
+----
+
+== 자주 사용하는 명령어
+
+oozieService=http://localhost:11000/oozie
+prop=/PATH/TO/PROPERTIES/FILE
+
+-Dkey=value 를 추가하여 실행할 경우 properties 파일에서 불러오듯이 ${key} 형식으로 사용 가능합니다.
+
+=== run
+
+처음 실행 시 Run 은 0 입니다.
+
+oozie job -oozie <OOZIE_SERVICE> -run -config <PROP> [-Dkey=value]
+
+=== rerun
+
+Workflow 의 STATUS 가 SUCCEEDED/KILLED/FAILED 셋 중 하나인 경우에만 가능합니다.
+
+rerun 시 Run 이 1 증가합니다.
+
+image::images/rerun.png[Rerun]
+
+[IMPORTANT]
+`반드시 아래 2개의 property 중 1개만 포함하여 실행합니다.` +
+`oozie.wf.rerun.skip.nodes` +
+`oozie.wf.rerun.failnodes` +
+
+==== skip
+
+지정한 action 들을 skip 하여 rerun 합니다.
+
+oozie.wf.rerun.skip.nodes 는 `,` 로 구분하여 지정합니다.
+
+skip node 는 이전에 성공했던 action 만 지정 가능합니다.
+
+oozie job -oozie <OOZIE_SERVICE> -rerun <JOB_ID> -Doozie.wf.rerun.skip.nodes=NODE1[,NODE2, ...] [-config <PROP>] [-Dkey=value]
+
+==== fail
+
+실패한 action 부터 실행할지 여부를 true 또는 false 로 지정합니다.
+
+oozie job -oozie <OOZIE_SERVICE> -rerun <JOB_ID> -Doozie.wf.rerun.failnodes={true|false} [-config <PROP>] [-Dkey=value]
+
+=== validate
+
+xml 이 유효한지 검증합니다.
+
+oozie validate ${PATH_TO_WORKFLOW_XML_FILE}
+
+=== kill
+
+실행 중인 Oozie job 을 kill 합니다.
+
+oozie job -oozie <OOZIE_SERVICE> -kill <JOB_ID>
+
+== 각종 팁
+
+=== Oozie XML File
+
+xml 파일의 이름은 workflow.xml 또는 coordinator.xml 또는 bundle.xml 이어야만 합니다.
+
+workflow 실행시 properties file 에 oozie.wf.application.path 값에 workflow.xml 의 경로를 지정합니다.
+
+coordinator 실행시 properties file 에 oozie.coord.application.path 값에 coordinator.xml 의 경로를 지정합니다.
+
+bundle 실행시 properties file 에 oozie.bundle.application.path 값에 bundle.xml 의 경로를 지정합니다.
+
+[IMPORTANT]
+따라서 properties 파일에는 +
+`oozie.wf.application.path` +
+`oozie.coord.application.path` +
+`oozie.bundle.application.path` +
+위 3개 중 1개만 존재해야 합니다.
+
+=== Oozie Config File
+
+Config File 에 대한 TIP
+
+[TIP]
+properties 파일 또는 xml 파일(hadoop configuration.xml 형식) 2가지 형태가 사용 가능합니다. +
+property 우선순위: System property > 파일 내에서 나중에 지정된 value
+
+[IMPORTANT]
+Oozie XML File 에서 사용 할 변수는 key 에 . 이 포함되어서는 안됩니다.
+
+=== Namenode HA 적용
+
+Namenode 가 이중화 되었을 경우 아래를 추가하면 하나의 namenode 가 죽어도 실행 가능해집니다.
+
+<NAMESERVICE> 와 <NAMENODE1>, <NAMENODE2> 는 각자 환경에 맞게 변경합니다.
+
+[TIP]
+nameNode=hdfs://<NAMESERVICE> +
+oozie.launcher.dfs.nameservices=<NAMESERVICE> +
+oozie.launcher.dfs.ha.namenodes.<NAMESERVICE>=<NAMENODE1>,<NAMENODE2> +
+oozie.launcher.dfs.namenode.rpc-address.<NAMESERVICE>.<NAMENODE1>=<NAMENODE1_URL> +
+oozie.launcher.dfs.namenode.rpc-address.<NAMESERVICE>.<NAMENODE2>=<NAMENODE2_URL> +
+oozie.launcher.dfs.namenode.http-address.<NAMESERVICE>.<NAMENODE1>=<NAMENODE1_HTTP_URL> +
+oozie.launcher.dfs.namenode.http-address.<NAMESERVICE>.<NAMENODE2>=<NAMENODE2_HTTP_URL> +
+oozie.launcher.dfs.namenode.https-address.<NAMESERVICE>.<NAMENODE1>=<NAMENODE1_HTTPS_URL> +
+oozie.launcher.dfs.namenode.https-address.<NAMESERVICE>.<NAMENODE2>=<NAMENODE2_HTTPS_URL> +
+oozie.launcher.dfs.client.failover.proxy.provider.<NAMESERVICE>=org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider
+
+.적용 예
+[source,properties]
+----
+...
+nameNode=hdfs://haneulhdp
+oozie.launcher.dfs.nameservices=haneulhdp
+oozie.launcher.dfs.ha.namenodes.haneulhdp=nn1,nn2
+oozie.launcher.dfs.namenode.rpc-address.haneulhdp.nn1=hdp1.hdp.local:8020
+oozie.launcher.dfs.namenode.rpc-address.haneulhdp.nn2=hdp2.hdp.local:8020
+oozie.launcher.dfs.namenode.http-address.haneulhdp.nn1=hdp1.hdp.local:50070
+oozie.launcher.dfs.namenode.http-address.haneulhdp.nn2=hdp2.hdp.local:50070
+oozie.launcher.dfs.namenode.https-address.haneulhdp.nn1=hdp1.hdp.local:50470
+oozie.launcher.dfs.namenode.https-address.haneulhdp.nn2=hdp2.hdp.local:50470
+oozie.launcher.dfs.client.failover.proxy.provider.haneulhdp=org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider
+...
+----
+
+=== exceeds max number (1000) of files/dirs to delete in <prepare>
+
+https://github.com/apache/oozie/blob/master/sharelib/oozie/src/main/java/org/apache/oozie/action/hadoop/FSLauncherURIHandler.java
+
+prepare 에서 1000개 이상의 directory 또는 file 을 delete 하기 위해서는 properties 파일에 아래를 추가합니다.
+
+<MAX_VALUE> 대신 원하는 값을 입력합니다.
+
+[TIP]
+oozie.action.fs.glob.max=<MAX_VALUE>
+
+.적용 예
+[source,properties]
+----
+...
+oozie.action.fs.glob.max=5000
+...
+----
+
+=== workflow 가 시작하지 않거나 계속 PREP 상태인 경우
+
+properties file 의 설정값을 잘 확인합니다.
+
+jobTracker 가 제대로 설정 돼있지 않을 경우 이럴 수 있습니다.
+
+jobTracker 에 yarn.resourcemanager.address 값을 입력합니다.
+
+=== Oozie web console 에서 timezone 설정
+
+image::images/timezone.png[Timezone]
+
+[TIP]
+이는 쿠키에 저장하는 방식이기 때문에 사용자마다 해야한다.
+
+=== Oozie web console 수정하기
+
+/usr/hdp/2.4.2.0-258/oozie/oozie-server/webapps/oozie/oozie-console.js 파일을 수정한다.
+
+시작은 initConsole() 이란 function 이고 ExtJS 에 대한 지식이 필요하다.
+
+=== Oozie Notification 받기
+
+https://github.com/HaNeul-Kim/oozie_notification
+
+지정된 url 로 Oozie 의 각종 알림을 받을 수 있다.
+
+[IMPORTANT]
+$jobId, $status, $nodeName, $actionId 는 그대로 써준다.
+
+.적용 예
+[source,properties]
+----
+...
+oozie.wf.workflow.notification.url=http://hdp1.hdp.local:11001/workflow/$jobId/$status
+oozie.wf.action.notification.url=http://hdp1.hdp.local:11001/workflow/$jobId/$nodeName/$status
+oozie.coord.action.notification.url=http://hdp1.hdp.local:11001/coordinator/$actionId/$status
+...
+----
+
+=== Oozie launcher queue name 설정하기
+
+`oozie.launcher.mapred.job.queue.name` 또는 `oozie.launcher.mapreduce.job.queuename` 값을 설정한다.
+
+== `The end. Thanks.`
+
+== References
+
+* http://oozie.apache.org/
+* http://oozie.apache.org/docs/4.2.0/
+* https://github.com/apache/oozie
+* http://www.dbguide.net/
