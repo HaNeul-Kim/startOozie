@@ -534,22 +534,22 @@ jobTracker 에 yarn.resourcemanager.address 값을 입력합니다.
 image::images/timezone.png[Timezone]
 
 [TIP]
-이는 쿠키에 저장하는 방식이기 때문에 사용자마다 해야한다.
+이는 쿠키에 저장하는 방식이기 때문에 사용자마다 해야합니다.
 
-=== Oozie web console 수정하기
+=== Oozie web console 수정
 
-/usr/hdp/2.4.2.0-258/oozie/oozie-server/webapps/oozie/oozie-console.js 파일을 수정한다.
+/usr/hdp/2.4.2.0-258/oozie/oozie-server/webapps/oozie/oozie-console.js 파일을 수정합니다.
 
-시작은 initConsole() 이란 function 이고 ExtJS 에 대한 지식이 필요하다.
+시작은 initConsole() 이란 function 이고 ExtJS 에 대한 지식이 필요합니다.
 
 === Oozie Notification 받기
 
 https://github.com/HaNeul-Kim/oozie_notification
 
-지정된 url 로 Oozie 의 각종 알림을 받을 수 있다.
+지정된 url 로 Oozie 의 각종 알림을 받을 수 있습니다.
 
 [IMPORTANT]
-$jobId, $status, $nodeName, $actionId 는 그대로 써준다.
+$jobId, $status, $nodeName, $actionId 는 그대로 써야 합니다.
 
 .적용 예
 [source,properties]
@@ -563,7 +563,7 @@ oozie.coord.action.notification.url=http://hdp1.hdp.local:11001/coordinator/$act
 
 === Oozie launcher queue name 설정하기
 
-`oozie.launcher.mapred.job.queue.name` 또는 `oozie.launcher.mapreduce.job.queuename` 값을 설정한다.
+`oozie.launcher.mapred.job.queue.name` 또는 `oozie.launcher.mapreduce.job.queuename` 값을 설정해줍니다.
 
 == `The end. Thanks.`
 
