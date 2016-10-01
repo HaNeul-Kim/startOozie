@@ -565,6 +565,38 @@ oozie.coord.action.notification.url=http://hdp1.hdp.local:11001/coordinator/$act
 
 `oozie.launcher.mapred.job.queue.name` 또는 `oozie.launcher.mapreduce.job.queuename` 값을 설정해줍니다.
 
+=== Custom function 사용하기
+
+[source,java]
+----
+package my.package.path;
+
+public class ClassName {
+    public static ReturnType methodName(T1 t1, T2 t2, ...) {
+        // your logic
+        ...
+    }
+}
+----
+
+custom function 을 작성 후 jar 파일로 패키징을 합니다.
+
+그리고나서 그 jar 파일을 <OOZIE_SERVER>:/usr/hdp/current/oozie-server/libext 에 복사 해줍니다.
+
+그리고 Ambari 에서 Custom oozie-site.xml 부분에 다음을 추가 해줍니다.
+
+name: oozie.service.ELService.ext.functions.workflow
+
+value: <GROUP>:<METHOD_NAME>=my.package.path.ClassName#methodName[,...]
+
+value 부분의 GROUP 과 METHOD_NAME 은 나중에 xml 에서 ${<GROUP>:<METHOD_NAME>(...)} 으로 사용 가능합니다.
+
+예를 들어 custom:substring=my.package.path.MyCustomFunctions#substring 이라고 입력했다면
+
+${custom:substring("input", 1, 2)} 으로 사용 가능합니다.
+
+그리고나서 Oozie Server 를 재시작합니다.
+
 == `The end. Thanks.`
 
 == References
